@@ -12,7 +12,7 @@ KNOB<string> KnobOutputFile(KNOB_MODE_WRITEONCE, "pintool",
 
 
 // This function is called before every instruction is executed
-VOID docount() { icount++ }
+VOID docount() { icount++; }
     
 // Pin calls this function every time a new instruction is encountered
 VOID Instruction(INS ins, VOID *v)
