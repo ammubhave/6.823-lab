@@ -53,13 +53,14 @@ VOID updateDependencyDistanceInfo(void * vpParms) {
     // Populate the dependencySpacing array
     if (distance <= maxSize) {
         // YOUR CODE HERE....
+        dependencySpacing[distance - 1]++;
     }
   }
 
   for (it = regs->write.begin(); it != regs->write.end(); ++it) {
     reg_t reg = *it;
     // Update the lastInstructionCount for this register
-    lastInstructionCount[reg] = /**/;
+    lastInstructionCount[reg] = instructionCounter /**/;
   }
 }
 
