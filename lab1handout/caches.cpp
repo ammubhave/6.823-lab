@@ -32,6 +32,7 @@ class CacheModel
         UINT64   writeHits;
         UINT32** tag;
         bool**   validBit;
+        UINT32** lruQ;
 
     public:
         //Constructor for a cache
@@ -46,13 +47,17 @@ class CacheModel
             writeHits = 0;
             tag = new UINT32*[1u<<logNumRows];
             validBit = new bool*[1u<<logNumRows];
+            lruQ = new UINT32*[1u<<logNumRows];
             for(UINT32 i = 0; i < 1u<<logNumRows; i++)
             {
                 tag[i] = new UINT32[associativity];
                 validBit[i] = new bool[associativity];
-                for(UINT32 j = 0; j < associativity; j++)
+                lruQ[i] = new UINT32[associativity];
+                for(UINT32 j = 0; j < associativity; j++) {
                     validBit[i][j] = false;
-            }       
+                    lruQ[i][j] = j;
+                }
+            }
         }
         // Destructor
         virtual ~CacheModel()
@@ -61,9 +66,11 @@ class CacheModel
             {
                 delete[] tag[i];
                 delete[] validBit[i];
+                delete[] lruQ[i];
             }
             delete[] tag;
             delete[] validBit;
+            delete[] lruQ;
         }
 
         //Call this function to update the cache state whenever data is read
@@ -71,6 +78,62 @@ class CacheModel
 
         //Call this function to update the cache state whenever data is written
         virtual void writeReq(UINT32 virtualAddr) = 0;
+
+        bool searchAddr(UINT32 addr, UINT32* r_j) {
+            UINT32 x_tag = getTag(addr), x_idx = getIdx(addr);
+            for(UINT32 j = 0; j < associativity; j++) {
+                if (validBit[x_idx][j] && tag[x_idx][j] == x_tag) {
+                    *r_j = j; return true;
+                }
+            }
+            return false;
+        }
+
+        UINT32 getPageNumber(UINT32 addr) {
+            return addr >> logPageSize;
+        }
+        UINT32 getPageOffset(UINT32 addr) {
+            return addr & ((1u<<logPageSize)-1);
+        }
+        UINT32 getTag(UINT32 addr) {
+            return addr >> (logBlockSize + logNumRows);
+        }
+        UINT32 getIdx(UINT32 addr) {
+            return (addr >> logBlockSize) & ((1u<<logNumRows)-1);
+        }
+        UINT32 getOffset(UINT32 addr) {
+            return addr & ((1u<<logBlockSize)-1);
+        }
+
+        // Make address from tag, idx and offset
+        UINT32 makeAddr(UINT32 tag, UINT32 idx, UINT32 offset) {
+            assert (idx < (1u<<logNumRows));
+            assert (offset < (1u<<logBlockSize));
+
+            return (tag << (logBlockSize + logNumRows)) | (idx << logBlockSize) | offset;
+        }
+        // Make address from ppn and offset
+        UINT32 makeAddr(UINT32 pageNumber, UINT32 pageOffset) {
+            assert (pageOffset < (1u<<logPageSize));
+
+            return (pageNumber << logPageSize) | pageOffset;
+        }
+
+        // Pushes x_j to the very back of lruQ[idx] 
+        UINT32 lruTouch(UINT32 idx, UINT32 x_j) {
+            assert (idx < (1u<<logNumRows));
+            assert (x_j < associativity);
+
+            UINT32 j;
+            while (lruQ[idx][j] != x_j)
+                j++;
+            while (j < associativity - 1)
+                lruQ[idx][j] = lruQ[idx][j + 1];
+            lruQ[idx][associativity - 1] = x_j;
+        }
+        UINT32 lruHead(UINT32 idx) {
+            return lruQ[idx][0];
+        }
 
         //Do not modify this function
         void dumpResults(FILE* outFile)
@@ -91,12 +154,33 @@ class LruPhysIndexPhysTagCacheModel: public CacheModel
         {
         }
 
+        bool access(UINT32 virtualAddr) {
+            UINT32 physicalAddr = makeAddr(getPhysicalPageNumber(getPageNumber(virtualAddr)), getPageOffset(virtualAddr));
+            UINT32 idx = getIdx(physicalAddr), j;
+            bool isHit = searchAddr(physicalAddr, &j);
+            if (isHit) {
+                lruTouch(idx, j);
+                return true;
+            }
+            UINT32 lru_j = lruHead(idx);
+            tag[idx][lru_j] = getTag(physicalAddr);
+            validBit[idx][lru_j] = true;
+            lruTouch(idx, lru_j);
+            return false;
+        }
+
         void readReq(UINT32 virtualAddr)
         {
+            readReqs++;
+            if (access(virtualAddr))
+                readHits++;
         }
 
         void writeReq(UINT32 virtualAddr)
         {
+            writeReqs++;
+            if (access(virtualAddr))
+                writeHits++;
         }
 };
 
@@ -108,12 +192,33 @@ class LruVirIndexPhysTagCacheModel: public CacheModel
         {
         }
 
+        bool access(UINT32 virtualAddr) {
+            UINT32 physicalAddr = makeAddr(getPhysicalPageNumber(getPageNumber(virtualAddr)), getPageOffset(virtualAddr));
+            UINT32 idx = getIdx(physicalAddr), j;
+            bool isHit = searchAddr(physicalAddr, &j);
+            if (isHit) {
+                lruTouch(idx, j);
+                return true;
+            }
+            UINT32 lru_j = lruHead(idx);
+            tag[idx][lru_j] = getTag(physicalAddr);
+            validBit[idx][lru_j] = true;
+            lruTouch(idx, lru_j);
+            return false;
+        }
+
         void readReq(UINT32 virtualAddr)
         {
+            readReqs++;
+            if (access(virtualAddr))
+                readHits++;
         }
 
         void writeReq(UINT32 virtualAddr)
         {
+            writeReqs++;
+            if (access(virtualAddr))
+                writeHits++;
         }
 };
 
@@ -125,12 +230,32 @@ class LruVirIndexVirTagCacheModel: public CacheModel
         {
         }
 
+        bool access(UINT32 virtualAddr) {
+            UINT32 idx = getIdx(virtualAddr), j;
+            bool isHit = searchAddr(virtualAddr, &j);
+            if (isHit) {
+                lruTouch(idx, j);
+                return true;
+            }
+            UINT32 lru_j = lruHead(idx);
+            tag[idx][lru_j] = getTag(virtualAddr);
+            validBit[idx][lru_j] = true;
+            lruTouch(idx, lru_j);
+            return false;
+        }
+
         void readReq(UINT32 virtualAddr)
         {
+            readReqs++;
+            if (access(virtualAddr))
+                readHits++;
         }
 
         void writeReq(UINT32 virtualAddr)
         {
+            writeReqs++;
+            if (access(virtualAddr))
+                writeHits++;
         }
 };
 
