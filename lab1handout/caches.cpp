@@ -4,6 +4,8 @@
 #include <math.h>
 #include "pin.H"
 
+#define DEBUG 0
+
 UINT32 logPageSize;
 UINT32 logPhysicalMemSize;
 
@@ -124,11 +126,15 @@ class CacheModel
             assert (idx < (1u<<logNumRows));
             assert (x_j < associativity);
 
-            UINT32 j;
-            while (lruQ[idx][j] != x_j)
+            UINT32 j = 0;
+            while (lruQ[idx][j] != x_j) {
+                if (DEBUG)  printf("%d %d %d\n", j, x_j, lruQ[idx][j] );
                 j++;
-            while (j < associativity - 1)
+            }
+            while (j < associativity - 1) {
                 lruQ[idx][j] = lruQ[idx][j + 1];
+                j++;
+            }
             lruQ[idx][associativity - 1] = x_j;
         }
         UINT32 lruHead(UINT32 idx) {
@@ -145,6 +151,8 @@ class CacheModel
 CacheModel* cachePP;
 CacheModel* cacheVP;
 CacheModel* cacheVV;
+UINT64 numMisalignedLoads = 0;
+UINT64 numMisalignedStores = 0;
 
 class LruPhysIndexPhysTagCacheModel: public CacheModel
 {
@@ -157,15 +165,21 @@ class LruPhysIndexPhysTagCacheModel: public CacheModel
         bool access(UINT32 virtualAddr) {
             UINT32 physicalAddr = makeAddr(getPhysicalPageNumber(getPageNumber(virtualAddr)), getPageOffset(virtualAddr));
             UINT32 idx = getIdx(physicalAddr), j;
+            if (DEBUG) printf("Searching %x in cache\n", physicalAddr);
             bool isHit = searchAddr(physicalAddr, &j);
             if (isHit) {
+                if (DEBUG) printf("Got hit, updating metadata\n");
                 lruTouch(idx, j);
+                if (DEBUG) printf("Access (HIT) successful\n");
                 return true;
             }
+            if (DEBUG) printf("Got miss, updating metadata\n");
             UINT32 lru_j = lruHead(idx);
             tag[idx][lru_j] = getTag(physicalAddr);
             validBit[idx][lru_j] = true;
+            if (DEBUG) printf("Updating lruQ\n");
             lruTouch(idx, lru_j);
+            if (DEBUG) printf("Access (MISS) successful\n");
             return false;
         }
 
@@ -190,18 +204,22 @@ class LruVirIndexPhysTagCacheModel: public CacheModel
         LruVirIndexPhysTagCacheModel(UINT32 logNumRowsParam, UINT32 logBlockSizeParam, UINT32 associativityParam)
             : CacheModel(logNumRowsParam, logBlockSizeParam, associativityParam)
         {
+           // printf("%d %d %d %d", logBlockSizeParam, logNumRows, logPageSize, associativity);
+           // assert (logBlockSize + logNumRows < logPageSize && associativity == 1 ||
+           //         logBlockSize + logNumRows == logPageSize);
         }
 
         bool access(UINT32 virtualAddr) {
             UINT32 physicalAddr = makeAddr(getPhysicalPageNumber(getPageNumber(virtualAddr)), getPageOffset(virtualAddr));
-            UINT32 idx = getIdx(physicalAddr), j;
-            bool isHit = searchAddr(physicalAddr, &j);
+            UINT32 idx = getIdx(virtualAddr), j;
+            UINT32 effectiveAddr = ((physicalAddr >> (logNumRows+logBlockSize)) << (logNumRows+logBlockSize)) | (virtualAddr & ((1u<<(logNumRows+logBlockSize))-1));
+            bool isHit = searchAddr(effectiveAddr, &j);
             if (isHit) {
                 lruTouch(idx, j);
                 return true;
             }
             UINT32 lru_j = lruHead(idx);
-            tag[idx][lru_j] = getTag(physicalAddr);
+            tag[idx][lru_j] = getTag(effectiveAddr);
             validBit[idx][lru_j] = true;
             lruTouch(idx, lru_j);
             return false;
@@ -209,6 +227,7 @@ class LruVirIndexPhysTagCacheModel: public CacheModel
 
         void readReq(UINT32 virtualAddr)
         {
+            if (logBlockSize + logNumRows > logPageSize) return;
             readReqs++;
             if (access(virtualAddr))
                 readHits++;
@@ -216,6 +235,7 @@ class LruVirIndexPhysTagCacheModel: public CacheModel
 
         void writeReq(UINT32 virtualAddr)
         {
+            if (logBlockSize + logNumRows > logPageSize) return;
             writeReqs++;
             if (access(virtualAddr))
                 writeHits++;
@@ -263,6 +283,8 @@ class LruVirIndexVirTagCacheModel: public CacheModel
 void cacheLoad(UINT32 virtualAddr)
 {
     //Here the virtual address is aligned to a word boundary
+    if (virtualAddr & 0x3)
+        numMisalignedLoads++;
     virtualAddr = (virtualAddr >> 2) << 2;
     cachePP->readReq(virtualAddr);
     cacheVP->readReq(virtualAddr);
@@ -272,6 +294,8 @@ void cacheLoad(UINT32 virtualAddr)
 //Cache analysis routine
 void cacheStore(UINT32 virtualAddr)
 {
+    if (virtualAddr & 0x3)
+        numMisalignedStores++;
     //Here the virtual address is aligned to a word boundary
     virtualAddr = (virtualAddr >> 2) << 2;
     cachePP->writeReq(virtualAddr);
@@ -323,6 +347,8 @@ VOID Fini(INT32 code, VOID *v)
     cacheVP->dumpResults(outfile);
     fprintf(outfile, "virtual index virtual tag: ");
     cacheVV->dumpResults(outfile);
+    fprintf(outfile, "milaligned loads and stores: "); 
+    fprintf(outfile, "%lu,%lu\n", numMisalignedLoads, numMisalignedStores);
 }
 
 // argc, argv are the entire command line, including pin -t <toolname> -- ...
