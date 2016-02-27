@@ -364,9 +364,9 @@ VOID Fini(INT32 code, VOID *v)
     //fprintf(outfile, "milaligned loads and stores: "); 
     //fprintf(outfile, "%lu,%lu\n", numMisalignedLoads, numMisalignedStores);
     fprintf(outfile, "highest and lowest virtual addr: "); 
-    fprintf(outfile, "%x,%x\n", highestVirtualAddr, lowestVirtualAddr);
+    fprintf(outfile, "%d,%d\n", highestVirtualAddr, lowestVirtualAddr);
     fprintf(outfile, "highest and lowest physical addr: "); 
-    fprintf(outfile, "%x,%x\n", highestPhysicalAddr, lowestPhysicalAddr);
+    fprintf(outfile, "%d,%d\n", highestPhysicalAddr, lowestPhysicalAddr);
 }
 
 // argc, argv are the entire command line, including pin -t <toolname> -- ...
