@@ -153,6 +153,10 @@ CacheModel* cacheVP;
 CacheModel* cacheVV;
 UINT64 numMisalignedLoads = 0;
 UINT64 numMisalignedStores = 0;
+UINT32 lowestPhysicalAddr = -1;
+UINT32 highestPhysicalAddr = 0;
+UINT32 lowestVirtualAddr = -1;
+UINT32 highestVirtualAddr= 0;
 
 class LruPhysIndexPhysTagCacheModel: public CacheModel
 {
@@ -164,6 +168,12 @@ class LruPhysIndexPhysTagCacheModel: public CacheModel
 
         bool access(UINT32 virtualAddr) {
             UINT32 physicalAddr = makeAddr(getPhysicalPageNumber(getPageNumber(virtualAddr)), getPageOffset(virtualAddr));
+
+
+            if (physicalAddr > highestPhysicalAddr) highestPhysicalAddr = virtualAddr;
+            if (physicalAddr < lowestPhysicalAddr) lowestPhysicalAddr = virtualAddr;
+
+
             UINT32 idx = getIdx(physicalAddr), j;
             if (DEBUG) printf("Searching %x in cache\n", physicalAddr);
             bool isHit = searchAddr(physicalAddr, &j);
@@ -285,6 +295,8 @@ void cacheLoad(UINT32 virtualAddr)
     //Here the virtual address is aligned to a word boundary
     if (virtualAddr & 0x3)
         numMisalignedLoads++;
+    if (virtualAddr > highestVirtualAddr) highestVirtualAddr = virtualAddr;
+    if (virtualAddr < lowestVirtualAddr) lowestVirtualAddr = virtualAddr;
     virtualAddr = (virtualAddr >> 2) << 2;
     cachePP->readReq(virtualAddr);
     cacheVP->readReq(virtualAddr);
@@ -296,6 +308,8 @@ void cacheStore(UINT32 virtualAddr)
 {
     if (virtualAddr & 0x3)
         numMisalignedStores++;
+    if (virtualAddr > highestVirtualAddr) highestVirtualAddr = virtualAddr;
+    if (virtualAddr < lowestVirtualAddr) lowestVirtualAddr = virtualAddr;
     //Here the virtual address is aligned to a word boundary
     virtualAddr = (virtualAddr >> 2) << 2;
     cachePP->writeReq(virtualAddr);
@@ -347,8 +361,12 @@ VOID Fini(INT32 code, VOID *v)
     cacheVP->dumpResults(outfile);
     fprintf(outfile, "virtual index virtual tag: ");
     cacheVV->dumpResults(outfile);
-    fprintf(outfile, "milaligned loads and stores: "); 
-    fprintf(outfile, "%lu,%lu\n", numMisalignedLoads, numMisalignedStores);
+    //fprintf(outfile, "milaligned loads and stores: "); 
+    //fprintf(outfile, "%lu,%lu\n", numMisalignedLoads, numMisalignedStores);
+    fprintf(outfile, "highest and lowest virtual addr: "); 
+    fprintf(outfile, "%x,%x\n", highestVirtualAddr, lowestVirtualAddr);
+    fprintf(outfile, "highest and lowest physical addr: "); 
+    fprintf(outfile, "%x,%x\n", highestPhysicalAddr, lowestPhysicalAddr);
 }
 
 // argc, argv are the entire command line, including pin -t <toolname> -- ...
