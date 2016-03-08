@@ -30,6 +30,27 @@ class myBranchPredictor: public BranchPredictor
 
 };
 
+class BHTPredictor: public BranchPredictor
+{
+    UINT8 table[1024];
+    public:
+        BOOL makePrediction(ADDRINT address) {
+            if (table[address & ((1<<10)-1)] >= 2) {
+                return TRUE;
+            } else {
+                return FALSE;
+            }
+        }
+
+        void makeUpdate(BOOL takenActually, BOOL takenPredicted, ADDRINT address) {
+            UINT32 idx = address & ((1<<10)-1);
+            if (takenActually && table[idx] < 3)
+                table[idx]++;
+            else if (!takenActually && table[idx] > 0)
+                table[idx]--;          
+        }
+};
+
 BranchPredictor* BP;
 
 
@@ -101,7 +122,7 @@ VOID Fini(int, VOID * v)
 int main(int argc, char * argv[])
 {
     // Make a new branch predictor
-    BP = new myBranchPredictor();
+    BP = new BHTPredictor();//myBranchPredictor();
 
     // Initialize pin
     PIN_Init(argc, argv);
