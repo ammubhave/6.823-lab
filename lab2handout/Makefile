@@ -20,7 +20,7 @@ TARGET_COMPILER?=gnu
 ifeq ($(TARGET_COMPILER),gnu)
     include $(PIN_HOME)/source/tools/makefile.gnu.config
     LINKER?=${CXX}
-    CXXFLAGS ?= -Wall -Werror -Wno-unknown-pragmas $(DBG) $(OPT)
+    CXXFLAGS ?= -Wall -Werror -Wno-unknown-pragmas $(DBG) $(OPT) -std=c++0x
 endif
 
 ifeq ($(TARGET_COMPILER),ms)
