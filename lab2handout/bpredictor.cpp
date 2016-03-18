@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <assert.h>
 #include <stdarg.h>
+#include <stdlib.h>
 #include "pin.H"
 
 //#define DEBUG(format, ...) fprintf(stderr, "%d " format "\n", __LINE__, ##__VA_ARGS__)
@@ -52,6 +53,53 @@ class SaturatingCounter
         // N bit register
         static UINT64 getSize() {
             return N;
+        }
+};
+
+template <size_t L, size_t N, size_t H, UINT64 init = (1<<N)/2-1>
+class SaturatingCounterWithSharedHystersis
+{
+    UINT64 val[1<<L];
+    BOOL hyst[(1<<L)/H];
+    public:
+        SaturatingCounterWithSharedHystersis() {
+            for (UINT64 i = 0; i < (1<<L); i++) {
+                reset(i);
+            }
+        }
+
+        void increment(UINT64 i) {
+            if (hyst[i/H] == 0)
+                hyst[i/H] = 1;
+            else if (val < (1<<(N-1))-1) {
+                val++;
+                hyst[i/H] = 0;
+            }
+        }
+
+        void decrement(UINT64 i) {
+            if (hyst[i/H] == 1)
+                hyst[i/H] = 0;
+            else if (val > 0) {
+                val--;
+                hyst[i/H] = 1;
+            }
+        }
+
+        void reset(UINT64 i) {
+            val[i] = init >> 1;
+            hyst[i/H] = init & 1;
+        }
+
+        BOOL isTaken() {
+            if (val > (1<<(N-1))/2-1)
+                return true;
+            return false;
+        }
+
+        // N bit register
+        static UINT64 getSize() {
+            return L*N;
         }
 };
 
@@ -153,6 +201,40 @@ class BHTPredictor: public BranchPredictor
         }
 };
 
+template<size_t L, size_t H>
+class BHTPredictorWithSharedHysteresis: public BranchPredictor
+{
+    BOOL counter[1<<L];
+    BOOL hystersis[(1<<L)/H];
+    public:
+        BHTPredictorWithSharedHysteresis() { assert (getSize() <= MAXIMUM_STORAGE_SIZE); }
+
+        BOOL makePrediction(ADDRINT address) {
+            return counter[truncate(address, L)];
+        }
+
+        void makeUpdate(BOOL takenActually, BOOL takenPredicted, ADDRINT address) {
+            UINT64 idx = truncate(address, L);
+            if (takenActually) {
+                if (!hystersis[idx/H])
+                    hystersis[idx/H] = true;
+                else if (!counter[idx]) {
+                    counter[idx] = true; hystersis[idx/H] = false;
+                }
+            } else {
+                if (hystersis[idx/H])
+                    hystersis[idx/H] = false;
+                else if (counter[idx]) {
+                    counter[idx] = false; hystersis[idx/H] = true;
+                }
+            }
+        }
+
+        static UINT64 getSize() {
+            return (1<<L)+((1<<L)/H);
+        }
+};
+
 template<size_t L, size_t H, UINT64 (*hash)(UINT64 address, UINT64 history), UINT64 bits = 2>
 class GlobalHistoryPredictor: public BranchPredictor
 {
@@ -172,6 +254,10 @@ class GlobalHistoryPredictor: public BranchPredictor
             else
                 counter[idx].decrement();
             globalHistory.shiftIn(takenActually);
+        }
+
+        UINT64 getHistory() {
+            return globalHistory.getVal();
         }
 
         static UINT64 getSize() {
@@ -241,6 +327,41 @@ class TournamentPredictor: public BranchPredictor {
 
         UINT64 getSize() {
             return BPs[0]->getSize() + BPs[1]->getSize() + (1<<L)*SaturatingCounter<bits>::getSize();
+        }
+};
+
+template<size_t L>
+class Alpha21264Predictor: public BranchPredictor {
+    SaturatingCounter<2> counter[1<<L];
+    GlobalHistoryPredictor<L, L, &f_xor> GP;
+    LocalHistoryPredictor<10, 10, 10, &f_b, 3> LP;
+
+    public:
+        Alpha21264Predictor() {
+            assert (getSize() <= MAXIMUM_STORAGE_SIZE);
+        }
+
+        BOOL makePrediction(ADDRINT address) {
+            if (counter[truncate(GP.getHistory(), L)].isTaken())
+                return GP.makePrediction(address);
+            else
+                return LP.makePrediction(address);
+        }
+
+        void makeUpdate(BOOL takenActually, BOOL takenPredicted, ADDRINT address) {
+            UINT64 idx = truncate(GP.getHistory(), L);
+            BOOL pred_0 = GP.makePrediction(address);
+            BOOL pred_1 = LP.makePrediction(address);
+            if (takenActually != pred_0 && takenActually == pred_1)
+                counter[idx].decrement();
+            else if (takenActually == pred_0 && takenActually != pred_1)
+                counter[idx].increment();
+            GP.makeUpdate(takenActually, takenPredicted, address);
+            LP.makeUpdate(takenActually, takenPredicted, address);
+        }
+
+        UINT64 getSize() {
+            return GP.getSize() + LP.getSize() + (1<<L)*SaturatingCounter<2>::getSize();
         }
 };
 
@@ -327,9 +448,9 @@ class TagePredictorComponent : public TagePredictorComponentBase {
         }
 };
 
-template<size_t LL>
+template<size_t LL, size_t H>
 class TageBasePredictor : public TagePredictorComponentBase {
-    BHTPredictor<LL> T0;
+    BHTPredictorWithSharedHysteresis<LL, H> T0;
 
     public:
         TageBasePredictor() {
@@ -432,8 +553,11 @@ class TagePredictor : public BranchPredictor {
             Ts[pred_p]->update(takenActually, takenPredicted, address, globalHistory.getVal(), altpred);
             DEBUG("DEBUG");
             if (takenActually != takenPredicted) {
-                for (UINT64 k = pred_p + 1; k < N; k++) {
-                    if (Ts[k]->allocate(address, globalHistory.getVal(), takenActually))
+                UINT64 k_offset = 0;
+                UINT64 tmp = rand() % (1 << (N-pred_p-1));
+                while (tmp >>= 1) k_offset++;
+                for (UINT64 k = 0; k < N - (pred_p + 1); k++) {
+                    if (Ts[pred_p + 1 + ((k+k_offset)%(N - (pred_p + 1)))]->allocate(address, globalHistory.getVal(), takenActually))
                         return;
                     DEBUG("DEBUG");
                 }
@@ -452,6 +576,115 @@ class TagePredictor : public BranchPredictor {
                 size += Ts[i]->getSize();
             }
             return size;
+        }
+};
+
+template<size_t N, size_t L>
+class NaiveBPAT : public BranchPredictor {
+    ShiftRegister<2*N> history[1<<L];
+    SaturatingCounter<2> counter[1<<L];
+    BranchPredictor* altPredictor;
+
+    public:
+        NaiveBPAT(BranchPredictor* alt) {
+            altPredictor = alt;
+            assert(getSize() < MAXIMUM_STORAGE_SIZE);
+        }
+
+        BOOL predict(ADDRINT address, BOOL* pred) {
+            UINT64 idx = truncate(address, L);
+            UINT64 haystack = history[idx].getVal();
+            UINT64 needle = truncate(haystack, N);
+
+            for (UINT64 i = 0; i < N; i++) {
+                *pred = haystack&1;
+                haystack >>= 1;
+                if (truncate(haystack, N) == needle)
+                    return true;
+            }
+            return false;
+        }
+
+        BOOL makePrediction(ADDRINT address) {
+            BOOL pred;
+            if (predict(address, &pred) && !counter[truncate(address, L)].isTaken())
+                return pred;
+            return altPredictor->makePrediction(address);
+        }
+
+        void makeUpdate(BOOL takenActually, BOOL takenPredicted, ADDRINT address) {
+            UINT64 idx = truncate(address, L);
+            BOOL pred, altpred;
+            altpred = altPredictor->makePrediction(address);
+            altPredictor->makeUpdate(takenActually, altpred, address);
+            if (predict(address, &pred)) {
+                if (pred == takenActually && altpred != takenActually)
+                    counter[idx].decrement();
+                else if (pred != takenActually && altpred == takenActually)
+                    counter[idx].increment();
+            } else if (altpred == takenActually) {
+                counter[idx].increment();
+            }
+
+            history[idx].shiftIn(takenActually);
+        }
+
+        UINT64 getSize() {
+            return altPredictor->getSize() + (1<<L)*ShiftRegister<2*N>::getSize();
+        }
+};
+
+template<size_t N, size_t L, size_t N2, size_t G2>
+class nBPATGShare : public BranchPredictor {
+    ShiftRegister<2*N> history[1<<L];
+    SaturatingCounter<2> counter[1<<L];
+    GlobalHistoryPredictor<N2, G2, &f_xor> altPredictor;
+
+    public:
+        nBPATGShare() {
+            assert(getSize() < MAXIMUM_STORAGE_SIZE);
+        }
+
+        BOOL predict(ADDRINT address, BOOL* pred) {
+            UINT64 idx = truncate(address, L);
+            UINT64 haystack = history[idx].getVal();
+            UINT64 needle = truncate(haystack, N);
+
+            for (UINT64 i = 0; i < N; i++) {
+                *pred = haystack&1;
+                haystack >>= 1;
+                if (truncate(haystack, N) == needle)
+                    return true;
+            }
+            return false;
+        }
+
+        BOOL makePrediction(ADDRINT address) {
+            BOOL pred;
+            if (predict(address, &pred) && !counter[truncate(address, L)].isTaken())
+                return pred;
+            return altPredictor.makePrediction(address);
+        }
+
+        void makeUpdate(BOOL takenActually, BOOL takenPredicted, ADDRINT address) {
+            UINT64 idx = truncate(address, L);
+            BOOL pred, altpred;
+            altpred = altPredictor.makePrediction(address);
+            altPredictor.makeUpdate(takenActually, altpred, address);
+            if (predict(address, &pred)) {
+                if (pred == takenActually && altpred != takenActually)
+                    counter[idx].decrement();
+                else if (pred != takenActually && altpred == takenActually)
+                    counter[idx].increment();
+            } else if (altpred == takenActually) {
+                counter[idx].increment();
+            }
+
+            history[idx].shiftIn(takenActually);
+        }
+
+        UINT64 getSize() {
+            return altPredictor.getSize() + (1<<L)*ShiftRegister<2*N>::getSize() + (1<<L)*SaturatingCounter<2>::getSize();
         }
 };
 
@@ -535,23 +768,30 @@ int main(int argc, char * argv[])
     //BP = new LocalHistoryPredictor<14, 14, 6, &f_xor>();
     //87% on SPECINT, 99% on SPECFP, avg 92%
 
-    // Alpha-21264 Tournament Predictor
-    // http://userpages.umbc.edu/~squire/images/alpha21264a.pdf
+    // Alpha-21264 Predictor
+    BP = new Alpha21264Predictor<12>();
+
+    // Chooser is indexed by the address bits
     //BP = new TournamentPredictor<12>(
     //    new GlobalHistoryPredictor<12, 12, &f_xor>(),
     //    new LocalHistoryPredictor<10, 10, 10, &f_b, 3>()
     //);
     //94% on SPECINT, 99% on SPECFP, avg 96%
 
-    DEBUG("BP Initializing");
-    BP = new TagePredictor<5, 40>(
-        new TageBasePredictor<11>(),
-        new TagePredictorComponent<9, 9, &f_folded_xor<9, 9, 5>, &f_folded_xor<9, 64, 5>>(),
-        new TagePredictorComponent<9, 9, &f_folded_xor<9, 9, 10>, &f_folded_xor<9, 64, 10>>(),
-        new TagePredictorComponent<9, 9, &f_folded_xor<9, 9, 20>, &f_folded_xor<9, 64, 20>>(),
-        new TagePredictorComponent<9, 9, &f_folded_xor<9, 9, 40>, &f_folded_xor<9, 64, 40>>()
-    );
-    DEBUG("BP Initialized");
+    // DEBUG("BP Initializing");
+    // BP = new TagePredictor<5, 40>(
+    //     new TageBasePredictor<11, 1>(),
+    //     new TagePredictorComponent<9, 9, &f_folded_xor<9, 9, 5>, &f_folded_xor<9, 64, 5>>(),
+    //     new TagePredictorComponent<9, 9, &f_folded_xor<9, 9, 10>, &f_folded_xor<9, 64, 10>>(),
+    //     new TagePredictorComponent<9, 9, &f_folded_xor<9, 9, 20>, &f_folded_xor<9, 64, 20>>(),
+    //     new TagePredictorComponent<9, 9, &f_folded_xor<9, 9, 40>, &f_folded_xor<9, 64, 40>>()
+    // );
+    // DEBUG("BP Initialized");
+
+    // BP = new NaiveBPAT<8, 11>(
+    //     new Alpha21264Predictor<11>();
+    // );
+//    BP = new nBPATGShare<12, 10, 11, 12>();
 
     // Initialize pin
     PIN_Init(argc, argv);
@@ -567,3 +807,4 @@ int main(int argc, char * argv[])
 
     return 0;
 }
+
