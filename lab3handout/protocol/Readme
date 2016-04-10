@@ -1,0 +1,8 @@
+To build and run your verifier (say, filename.m):
+
+$ ../Murphi/bin/mu filename.m 
+   This should generate a filename.C
+
+$ make filename
+
+$ ./filename -v
