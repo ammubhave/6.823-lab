@@ -37,8 +37,7 @@ type
                        ReadAck,
                        WriteReq,        -- write request
                        WriteAck,
-                       WBReq,            -- writeback request (w/ or wo/ data)
-                       WBAck,
+                       WBResp,            -- writeback request (w/ or wo/ data)
                        RecallReq
                     };
 
@@ -68,7 +67,7 @@ type
       -- processor state: again, three stable states (M,S,I) but you need to
       -- add transient states to support races
       state: enum { PM, PS, PI,
-                    PT_Pending, PT_WritebackPending};
+                    PTS_Pending, PTM_Pending};
     End;
 
 ----------------------------------------------------------------------
@@ -115,6 +114,21 @@ Begin
   error "Unhandled state!";
 End;
 
+Function NumberOfSharers(): 0..ProcCount;
+Begin
+  return MultiSetCount(i:HomeNode.sharers, true);
+End;
+
+Function IsSharer(n:Node) : boolean;
+Begin
+  if MultiSetCount(i:HomeNode.sharers, HomeNode.sharers[i] = n) > 0
+  then
+    return true;
+  else
+    return false;
+  endif;
+End;
+
 Procedure AddToSharersList(n:Node);
 Begin
   if MultiSetCount(i:HomeNode.sharers, HomeNode.sharers[i] = n) = 0
@@ -139,8 +153,6 @@ Begin
 
   switch HomeNode.state
   case HI:
-    Assert (cnt = 0) "Sharers list non-empty, but line is Invalid";
-
     switch msg.mtype
 
     case ReadReq:
@@ -159,8 +171,6 @@ Begin
     endswitch;
 
   case HM:
-    Assert (IsUndefined(HomeNode.owner) = false) "HomeNode has no owner, but line is Modified";
-
     switch msg.mtype
 
     case ReadReq:
@@ -174,10 +184,9 @@ Begin
       Send(RecallReq, HomeNode.owner, HomeType, VC0, HomeNode.owner, cnt);
       HomeNode.owner := msg.src;
       
-    case WBReq:
+    case WBResp:
       assert (msg.src = HomeNode.owner) "Writeback from non-owner";
       HomeNode.state := HI;
-      Send(WBAck, msg.src, HomeType, VC1, msg.src, cnt);
       undefine HomeNode.owner
 
     else
@@ -195,15 +204,30 @@ Begin
       Send(ReadAck, msg.src, HomeType, VC1, msg.src, cnt);
 
     case WriteReq:
-      HomeNode.state := HSTM_Pending;
-      for n:Proc do
-        if MultiSetCount(i:HomeNode.sharers, HomeNode.sharers[i] = n) != 0
-        then
-          Send(RecallReq, n, HomeType, VC0, n, cnt);
-        endif;
-      endfor;
-      MultiSetRemovePred(i:HomeNode.sharers, true);
+      RemoveFromSharersList(msg.src);
+      cnt := NumberOfSharers();
+      if cnt > 0
+      then
+        HomeNode.state := HSTM_Pending;
+        for n:Proc do
+          if IsSharer(n)
+          then
+            Send(RecallReq, n, HomeType, VC0, n, cnt);
+          endif;
+        endfor;
+      else
+        HomeNode.state := HM;
+        Send(WriteAck, msg.src, HomeType, VC1, HomeNode.owner, cnt);
+      endif;
       HomeNode.owner := msg.src;
+
+    case WBResp:
+      RemoveFromSharersList(msg.src);
+      cnt := NumberOfSharers();      
+      if cnt = 0
+      then
+        HomeNode.state := HI;
+      endif;
       
     else
       ErrorUnhandledMsg(msg, HomeType);
@@ -213,10 +237,8 @@ Begin
   case HMTM_Pending:
     switch msg.mtype
 
-    case WBReq:
-      Assert (!IsUndefined(HomeNode.owner)) "owner undefined";
+    case WBResp:
       HomeNode.state := HM;
-      --HomeNode.val := msg.val;
       Send(WriteAck, HomeNode.owner, HomeType, VC1, HomeNode.owner, cnt);
 
     case ReadReq:
@@ -233,15 +255,12 @@ Begin
   case HMTS_Pending:
     switch msg.mtype
 
-    case WBReq:
-      --Assert (!IsUndefined(HomeNode.owner)) "owner undefined";
-      --Assert (cnt = 1) "sharers list empty but in HMTS mode";
+    case WBResp:
       HomeNode.state := HS;
-      --HomeNode.val := msg.val;
       for n:Proc do
-        if MultiSetCount(i:HomeNode.sharers, HomeNode.sharers[i] = n) != 0
+        if IsSharer(n)
         then
-          Send(WriteAck, n, HomeType, VC1, n, cnt);
+          Send(ReadAck, n, HomeType, VC1, n, cnt);
         endif;
       endfor;
 
@@ -259,17 +278,13 @@ Begin
   case HSTM_Pending:
     switch msg.mtype
 
-    case WBReq:
+    case WBResp:
       RemoveFromSharersList(msg.src);
-      if cnt = 1 then
-        HomeNode.state := HS;
-        for n:Proc do
-          if MultiSetCount(i:HomeNode.sharers, HomeNode.sharers[i] = n) != 0
-          then
-            Send(ReadAck, n, HomeType, VC1, n, cnt);
-          endif;
-        endfor;
-      endif
+      cnt := NumberOfSharers();
+      if cnt = 0 then
+        HomeNode.state := HM;
+        Send(WriteAck, HomeNode.owner, HomeType, VC1, HomeNode.owner, cnt);
+      endif;
 
     case ReadReq:
       msg_processed := false;
@@ -299,7 +314,8 @@ Begin
   case PI:
 
     switch msg.mtype
-
+    case RecallReq:
+      Send(WBResp, msg.src, p, VC1, msg.src, 0);
     else
       ErrorUnhandledMsg(msg, p);
     endswitch;
@@ -308,7 +324,7 @@ Begin
 
     switch msg.mtype
     case RecallReq:
-      Send(WBReq, msg.src, p, VC1, msg.src, 0);
+      Send(WBResp, msg.src, p, VC1, msg.src, 0);
       ps := PI;
     else
       ErrorUnhandledMsg(msg, p);
@@ -318,13 +334,13 @@ Begin
 
     switch msg.mtype
     case RecallReq:
-      Send(WBReq, msg.src, p, VC1, msg.src, 0);
+      Send(WBResp, msg.src, p, VC1, msg.src, 0);
       ps := PI;
     else
       ErrorUnhandledMsg(msg, p);
     endswitch;
 
-  case PITS_Pending:
+  case PTS_Pending:
 
     switch msg.mtype
     case ReadAck:
@@ -335,7 +351,7 @@ Begin
       ErrorUnhandledMsg(msg, p);
     endswitch;
 
-  case PITM_Pending:
+  case PTM_Pending:
 
     switch msg.mtype
     case WriteAck:
@@ -345,29 +361,6 @@ Begin
     else
       ErrorUnhandledMsg(msg, p);
     endswitch;
-
-  case PSTM_Pending:
-
-    switch msg.mtype
-    case WriteAck:
-      ps := PM;
-    case RecallReq:
-      msg_processed := false; -- stall message in InBox
-    else
-      ErrorUnhandledMsg(msg, p);
-    endswitch;
-
-  case PT_WritebackPending:    
-
-    switch msg.mtype
-    case WBAck:
-      ps := PI;
-    case RecallReq:       -- treat a recall request as a Writeback acknowledgement
-      ps := PI;
-    else
-      ErrorUnhandledMsg(msg, p);
-    endswitch;
-
 
   ----------------------------
   -- Error catch
@@ -389,36 +382,37 @@ ruleset n:Proc Do
   alias p:Procs[n] Do
 
   rule "read request"
-    p.state = PI 
+    p.state = PI
   ==>
     Send(ReadReq, HomeType, n, VC0, UNDEFINED, UNDEFINED);
-    p.state := PITS_Pending;
+    p.state := PTS_Pending;
   endrule;
 
   rule "write request"
     (p.state = PI)
   ==>
     Send(WriteReq, HomeType, n, VC0, UNDEFINED, UNDEFINED);
-    p.state := PITM_Pending;
+    p.state := PTM_Pending;
   endrule;
 
   rule "upgrade request"
     (p.state = PS)
   ==>
     Send(WriteReq, HomeType, n, VC0, UNDEFINED, UNDEFINED);
-    p.state := PSTM_Pending;
+    p.state := PTM_Pending;
   endrule;
 
   rule "writeback"
     (p.state = PM)
   ==>
-    Send(WBReq, HomeType, n, VC2, UNDEFINED, UNDEFINED);
-    p.state := PMTI_Pending;
+    Send(WBResp, HomeType, n, VC2, UNDEFINED, UNDEFINED);
+    p.state := PI;
   endrule;
 
   rule "evict"
     (p.state = PS)
   ==>
+    Send(WBResp, HomeType, n, VC2, UNDEFINED, UNDEFINED);
     p.state := PI;
   endrule;
 
@@ -492,29 +486,50 @@ endstartstate;
 invariant "modified w/ empty sharers list"
   HomeNode.state = HM
     ->
-      MultiSetCount(i:HomeNode.sharers, true) = 0
+      MultiSetCount(i:HomeNode.sharers, true) = 0;
 
-invariant "modified w/o owner"
+invariant "modified to modified pending w/ empty sharers list"
+  HomeNode.state = HMTM_Pending
+    ->
+      MultiSetCount(i:HomeNode.sharers, true) = 0;
+
+invariant "modified to modified pending w/ owner"
+  HomeNode.state = HMTM_Pending
+    ->
+      IsUndefined(HomeNode.owner) = false;
+
+invariant "modified to shared pending w/o owner"
+  HomeNode.state = HMTS_Pending
+    ->
+      IsUndefined(HomeNode.owner) = true;
+
+invariant "modified w/ owner"
   HomeNode.state = HM
     ->
-      IsUndefined(HomeNode.owner) = false
+      IsUndefined(HomeNode.owner) = false;
 
 invariant "shared w/o empty sharers list"
   HomeNode.state = HS
     ->
-      MultiSetCount(i:HomeNode.sharers, true) > 0
+      MultiSetCount(i:HomeNode.sharers, true) > 0;
 
-invariant "shared w/ owner"
-  HomeNode.state = HM
+invariant "shared w/o owner"
+  HomeNode.state = HS
     ->
-      IsUndefined(HomeNode.owner) = true
+      IsUndefined(HomeNode.owner) = true;
 
-invariant "invalid w/o empty sharers list"
+invariant "invalid w/ empty sharers list"
   HomeNode.state = HI
     ->
-      MultiSetCount(i:HomeNode.sharers, true) = 0
+      MultiSetCount(i:HomeNode.sharers, true) = 0;
 
-invariant "invalid w/ owner"
+invariant "invalid w/o owner"
   HomeNode.state = HI
     ->
-      IsUndefined(HomeNode.owner) = true
+      IsUndefined(HomeNode.owner) = true;
+/*
+invariant "shared or modified home with shared proc"
+  HomeNode.state = HI
+    ->
+      MultiSetCount(i:Procs, Procs[i].state = PS | Procs[i].state = PM) = 0;
+*/
