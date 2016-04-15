@@ -34,9 +34,12 @@ type
   -- Message enumeration: you must support the first three, but will need to
   -- add more message types (e.g., various ACKs)
   MessageType: enum {  ReadReq,         -- request for shared state
-		                   WriteReq,        -- write request
-		                   WBReq            -- writeback request (w/ or wo/ data)
-                       -- TODO: add more messages here!
+                       ReadAck,
+                       WriteReq,        -- write request
+                       WriteAck,
+                       WBReq,            -- writeback request (w/ or wo/ data)
+                       WBAck,
+                       RecallReq
                     };
 
   Message:
@@ -53,18 +56,19 @@ type
     Record
       -- home node state: you have three stable states (M,S,I) but need to
       -- add transient states during races
-      state: enum { HM, HS, HI -- TODO: add transient states here! };
+      state: enum { HM, HS, HI,
+                    HMTM_Pending, HMTS_Pending, HSTM_Pending };
 
-      owner: Node;	
-      sharers: multiset [ProcCount] of Node; 
+      owner: Node;  
+      sharers: multiset [ProcCount] of Node;
     End;
 
   ProcState:
     Record
       -- processor state: again, three stable states (M,S,I) but you need to
       -- add transient states to support races
-      state: enum { PM, PS, PI
-                  };
+      state: enum { PM, PS, PI,
+                    PT_Pending, PT_WritebackPending};
     End;
 
 ----------------------------------------------------------------------
@@ -80,10 +84,10 @@ var
 -- Procedures
 ----------------------------------------------------------------------
 Procedure Send(mtype:MessageType;
-	             dst:Node;
-	             src:Node;
+               dst:Node;
+               src:Node;
                vc:VCType;
-	             aux:Node;
+               aux:Node;
                cnt:0..ProcCount);
 var msg:Message;
 Begin
@@ -98,12 +102,12 @@ End;
 
 Procedure ErrorUnhandledMsg(msg:Message; n:Node);
 Begin
-  switch msg.mtype
+  /*switch msg.mtype
   case WriteReq, ReadReq, WBReq:
     msg_processed := false;  -- we can receive a raw request any time
-  else
+  else*/
     error "Unhandled message type!";
-  endswitch;
+  --endswitch;
 End;
 
 Procedure ErrorUnhandledState();
@@ -140,10 +144,14 @@ Begin
     switch msg.mtype
 
     case ReadReq:
-      -- TODO: perform actions here!
+      HomeNode.state := HS;
+      AddToSharersList(msg.src);
+      Send(ReadAck, msg.src, HomeType, VC1, msg.src, cnt);
 
     case WriteReq:
-      -- TODO: perform actions here!
+      HomeNode.state := HM;
+      HomeNode.owner := msg.src;
+      Send(WriteAck, msg.src, HomeType, VC1, msg.src, cnt);
 
     else
       ErrorUnhandledMsg(msg, HomeType);
@@ -151,19 +159,26 @@ Begin
     endswitch;
 
   case HM:
-    Assert (IsUndefined(HomeNode.owner) = false) 
-       "HomeNode has no owner, but line is Modified";
+    Assert (IsUndefined(HomeNode.owner) = false) "HomeNode has no owner, but line is Modified";
 
     switch msg.mtype
 
     case ReadReq:
-      -- TODO: perform actions here!
+      HomeNode.state := HMTS_Pending;
+      AddToSharersList(msg.src);
+      Send(RecallReq, HomeNode.owner, HomeType, VC0, HomeNode.owner, cnt);
+      undefine HomeNode.owner
       
     case WriteReq:
-      -- TODO: perform actions here!
+      HomeNode.state := HMTM_Pending;
+      Send(RecallReq, HomeNode.owner, HomeType, VC0, HomeNode.owner, cnt);
+      HomeNode.owner := msg.src;
       
     case WBReq:
-      -- TODO: perform actions here!
+      assert (msg.src = HomeNode.owner) "Writeback from non-owner";
+      HomeNode.state := HI;
+      Send(WBAck, msg.src, HomeType, VC1, msg.src, cnt);
+      undefine HomeNode.owner
 
     else
       ErrorUnhandledMsg(msg, HomeType);
@@ -176,11 +191,92 @@ Begin
     switch msg.mtype
 
     case ReadReq:
-      -- TODO: perform actions here!
+      AddToSharersList(msg.src);
+      Send(ReadAck, msg.src, HomeType, VC1, msg.src, cnt);
 
     case WriteReq:
-      -- TODO: perform actions here!
+      HomeNode.state := HSTM_Pending;
+      for n:Proc do
+        if MultiSetCount(i:HomeNode.sharers, HomeNode.sharers[i] = n) != 0
+        then
+          Send(RecallReq, n, HomeType, VC0, n, cnt);
+        endif;
+      endfor;
+      MultiSetRemovePred(i:HomeNode.sharers, true);
+      HomeNode.owner := msg.src;
       
+    else
+      ErrorUnhandledMsg(msg, HomeType);
+
+    endswitch;
+
+  case HMTM_Pending:
+    switch msg.mtype
+
+    case WBReq:
+      Assert (!IsUndefined(HomeNode.owner)) "owner undefined";
+      HomeNode.state := HM;
+      --HomeNode.val := msg.val;
+      Send(WriteAck, HomeNode.owner, HomeType, VC1, HomeNode.owner, cnt);
+
+    case ReadReq:
+      msg_processed := false;
+
+    case WriteReq:
+      msg_processed := false;
+
+    else
+      ErrorUnhandledMsg(msg, HomeType);
+
+    endswitch;
+
+  case HMTS_Pending:
+    switch msg.mtype
+
+    case WBReq:
+      --Assert (!IsUndefined(HomeNode.owner)) "owner undefined";
+      --Assert (cnt = 1) "sharers list empty but in HMTS mode";
+      HomeNode.state := HS;
+      --HomeNode.val := msg.val;
+      for n:Proc do
+        if MultiSetCount(i:HomeNode.sharers, HomeNode.sharers[i] = n) != 0
+        then
+          Send(WriteAck, n, HomeType, VC1, n, cnt);
+        endif;
+      endfor;
+
+    case ReadReq:
+      msg_processed := false;
+
+    case WriteReq:
+      msg_processed := false;
+
+    else
+      ErrorUnhandledMsg(msg, HomeType);
+
+    endswitch;
+
+  case HSTM_Pending:
+    switch msg.mtype
+
+    case WBReq:
+      RemoveFromSharersList(msg.src);
+      if cnt = 1 then
+        HomeNode.state := HS;
+        for n:Proc do
+          if MultiSetCount(i:HomeNode.sharers, HomeNode.sharers[i] = n) != 0
+          then
+            Send(ReadAck, n, HomeType, VC1, n, cnt);
+          endif;
+        endfor;
+      endif
+
+    case ReadReq:
+      msg_processed := false;
+
+    case WriteReq:
+      msg_processed := false;
+
     else
       ErrorUnhandledMsg(msg, HomeType);
 
@@ -203,7 +299,7 @@ Begin
   case PI:
 
     switch msg.mtype
-      -- TODO: handle message cases here!
+
     else
       ErrorUnhandledMsg(msg, p);
     endswitch;
@@ -211,7 +307,9 @@ Begin
   case PM:
 
     switch msg.mtype
-      -- TODO: handle message cases here!
+    case RecallReq:
+      Send(WBReq, msg.src, p, VC1, msg.src, 0);
+      ps := PI;
     else
       ErrorUnhandledMsg(msg, p);
     endswitch;
@@ -219,12 +317,57 @@ Begin
   case PS:
 
     switch msg.mtype
-      -- TODO: handle message cases here!
+    case RecallReq:
+      Send(WBReq, msg.src, p, VC1, msg.src, 0);
+      ps := PI;
     else
       ErrorUnhandledMsg(msg, p);
     endswitch;
 
-  -- TODO: add additional states from Proc here!  
+  case PITS_Pending:
+
+    switch msg.mtype
+    case ReadAck:
+      ps := PS;
+    case RecallReq:
+      msg_processed := false; -- stall message in InBox
+    else
+      ErrorUnhandledMsg(msg, p);
+    endswitch;
+
+  case PITM_Pending:
+
+    switch msg.mtype
+    case WriteAck:
+      ps := PM;
+    case RecallReq:
+      msg_processed := false; -- stall message in InBox
+    else
+      ErrorUnhandledMsg(msg, p);
+    endswitch;
+
+  case PSTM_Pending:
+
+    switch msg.mtype
+    case WriteAck:
+      ps := PM;
+    case RecallReq:
+      msg_processed := false; -- stall message in InBox
+    else
+      ErrorUnhandledMsg(msg, p);
+    endswitch;
+
+  case PT_WritebackPending:    
+
+    switch msg.mtype
+    case WBAck:
+      ps := PI;
+    case RecallReq:       -- treat a recall request as a Writeback acknowledgement
+      ps := PI;
+    else
+      ErrorUnhandledMsg(msg, p);
+    endswitch;
+
 
   ----------------------------
   -- Error catch
@@ -249,28 +392,28 @@ ruleset n:Proc Do
     p.state = PI 
   ==>
     Send(ReadReq, HomeType, n, VC0, UNDEFINED, UNDEFINED);
-    -- TODO: any other actions?
+    p.state := PITS_Pending;
   endrule;
 
   rule "write request"
     (p.state = PI)
   ==>
     Send(WriteReq, HomeType, n, VC0, UNDEFINED, UNDEFINED);
-    -- TODO: any other actions?
+    p.state := PITM_Pending;
   endrule;
 
   rule "upgrade request"
     (p.state = PS)
   ==>
     Send(WriteReq, HomeType, n, VC0, UNDEFINED, UNDEFINED);
-    -- TODO: any other actions?
+    p.state := PSTM_Pending;
   endrule;
 
   rule "writeback"
     (p.state = PM)
   ==>
     Send(WBReq, HomeType, n, VC2, UNDEFINED, UNDEFINED);
-    -- TODO: any other actions?
+    p.state := PMTI_Pending;
   endrule;
 
   rule "evict"
@@ -299,19 +442,19 @@ ruleset n:Node do
       then
         HomeReceive(msg);
 
-	      if msg_processed
-	      then
-	        MultiSetRemove(midx, chan);
-	      endif;
+        if msg_processed
+        then
+          MultiSetRemove(midx, chan);
+        endif;
 
       else
         ProcReceive(msg, n);
 
-	      if msg_processed
-	      then
-	        MultiSetRemove(midx, chan);
-	      endif;
-	  
+        if msg_processed
+        then
+          MultiSetRemove(midx, chan);
+        endif;
+    
       endif;
 
     endrule;
@@ -330,7 +473,7 @@ startstate
   HomeNode.state := HI;
   undefine HomeNode.sharers;
   undefine HomeNode.owner;
-  undefine HomeNode.pending_node;
+  --undefine HomeNode.pending_node;
   
   -- processor initialization
   for i:Proc do
@@ -351,3 +494,27 @@ invariant "modified w/ empty sharers list"
     ->
       MultiSetCount(i:HomeNode.sharers, true) = 0
 
+invariant "modified w/o owner"
+  HomeNode.state = HM
+    ->
+      IsUndefined(HomeNode.owner) = false
+
+invariant "shared w/o empty sharers list"
+  HomeNode.state = HS
+    ->
+      MultiSetCount(i:HomeNode.sharers, true) > 0
+
+invariant "shared w/ owner"
+  HomeNode.state = HM
+    ->
+      IsUndefined(HomeNode.owner) = true
+
+invariant "invalid w/o empty sharers list"
+  HomeNode.state = HI
+    ->
+      MultiSetCount(i:HomeNode.sharers, true) = 0
+
+invariant "invalid w/ owner"
+  HomeNode.state = HI
+    ->
+      IsUndefined(HomeNode.owner) = true
