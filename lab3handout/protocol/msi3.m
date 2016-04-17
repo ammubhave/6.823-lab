@@ -18,7 +18,7 @@ const
   VC2: 2;                -- high priority
   NumVCs: VC2 - VC0 + 1;
   QMax: 2;
-  NetMax: ProcCount+1;
+  NetMax: 3*ProcCount+1;
   
 
 ----------------------------------------------------------------------
@@ -37,12 +37,8 @@ type
                        ReadAck,
                        WriteReq,        -- write request
                        WriteAck,
-                       InvReq,
-                       InvResp,
-                       DownReq,
-                       DownResp,
-                       WBReq,
-                       WBResp
+                       WBResp,            -- writeback request (w/ or wo/ data)
+                       RecallReq
                     };
 
   Message:
@@ -60,7 +56,7 @@ type
       -- home node state: you have three stable states (M,S,I) but need to
       -- add transient states during races
       state: enum { HM, HS, HI,
-                    HSTI_Pending, HMTI_Pending, HMTS_Pending };
+                    HMTI_Pending, HSTI_Pending };
       owner: Node;
       sharers: multiset [ProcCount] of Node;
     End;
@@ -70,7 +66,7 @@ type
       -- processor state: again, three stable states (M,S,I) but you need to
       -- add transient states to support races
       state: enum { PM, PS, PI,
-                    PTM_Pending, PTS_Pending, PTI_Pending};
+                    PTS_Pending, PTM_Pending};
     End;
 
 ----------------------------------------------------------------------
@@ -187,6 +183,36 @@ Begin
       HomeNode.owner := msg.src;
       Send(WriteAck, msg.src, HomeType, VC1, msg.src, cnt);
 
+    case WBResp:
+
+    else
+      ErrorUnhandledMsg(msg, HomeType);
+
+    endswitch;
+
+  case HM:
+    switch msg.mtype
+
+    case ReadReq:
+      if (MultiSetCount(i:Net[HomeType], true) < NetMax/4) then
+        HomeNode.state := HMTI_Pending;
+        Send(RecallReq, HomeNode.owner, HomeType, VC0, HomeNode.owner, cnt);
+      endif;
+      msg_processed := false;
+      
+    case WriteReq:
+      if (MultiSetCount(i:Net[HomeType], true) < NetMax/4) then
+        HomeNode.state := HMTI_Pending;
+        Send(RecallReq, HomeNode.owner, HomeType, VC0, HomeNode.owner, cnt);
+      endif;
+      msg_processed := false;
+      
+    case WBResp: 
+      if (msg.src = HomeNode.owner) then
+        HomeNode.state := HI;
+        undefine HomeNode.owner;
+      endif;
+
     else
       ErrorUnhandledMsg(msg, HomeType);
 
@@ -200,57 +226,36 @@ Begin
       Send(ReadAck, msg.src, HomeType, VC1, msg.src, cnt);
 
     case WriteReq:
-      RemoveFromSharersList(msg.src);
-      cnt := NumberOfSharers();
-      if cnt > 0
-      then
-        HomeNode.state := HSTI_Pending;
-        for n:Proc do
-          if IsSharer(n)
-          then
-            Send(InvReq, n, HomeType, VC0, n, cnt);
-          endif;
-        endfor;
-        msg_processed := false;
-      else
-        HomeNode.state := HM;
-        Send(WriteAck, msg.src, HomeType, VC1, HomeNode.owner, cnt);
+      if (MultiSetCount(i:Net[HomeType], true) < NetMax/4) then
+        RemoveFromSharersList(msg.src);
+        cnt := NumberOfSharers();
+        if cnt > 0
+        then
+          HomeNode.state := HSTI_Pending;
+          for n:Proc do
+            if IsSharer(n)
+            then
+              Send(RecallReq, n, HomeType, VC0, n, cnt);
+            endif;
+          endfor;
+          msg_processed := false;
+        else
+          HomeNode.state := HM;
+          Send(WriteAck, msg.src, HomeType, VC1, HomeNode.owner, cnt);
+        endif;
         HomeNode.owner := msg.src;
+      else
+        msg_processed := false;
       endif;
 
-    case WBReq:
+    case WBResp:
       RemoveFromSharersList(msg.src);
       cnt := NumberOfSharers();
       if cnt = 0
       then
         HomeNode.state := HI;
       endif;
-      Send(WBResp, msg.src, HomeType, VC1, HomeNode.owner, cnt);
       
-    else
-      ErrorUnhandledMsg(msg, HomeType);
-
-    endswitch;
-
-  case HM:
-    switch msg.mtype
-
-    case ReadReq:
-      HomeNode.state := HMTS_Pending;
-      Send(DownReq, HomeNode.owner, HomeType, VC0, HomeNode.owner, cnt);
-      msg_processed := false;
-      
-    case WriteReq:
-      HomeNode.state := HMTI_Pending;
-      Send(InvReq, HomeNode.owner, HomeType, VC0, HomeNode.owner, cnt);
-      msg_processed := false;
-      
-    case WBReq:
-      assert (msg.src = HomeNode.owner) "Writeback from non-owner";
-      HomeNode.state := HI;
-      undefine HomeNode.owner;
-      Send(WBResp, msg.src, HomeType, VC1, HomeNode.owner, cnt);
-
     else
       ErrorUnhandledMsg(msg, HomeType);
 
@@ -259,42 +264,11 @@ Begin
   case HMTI_Pending:
     switch msg.mtype
 
-    case InvResp:
-      assert (msg.src = HomeNode.owner) "InvResp from non-owner";
-      HomeNode.state := HI;
-      undefine HomeNode.owner;
-
-    case WBReq:
-      assert (msg.src = HomeNode.owner) "WBReq from non-owner";
-      HomeNode.state := HI;
-      undefine HomeNode.owner;
-      -- Don't send a WBResp because an InvReq is already in flight.
-
-    case ReadReq:
-      msg_processed := false;
-
-    case WriteReq:
-      msg_processed := false;
-
-    else
-      ErrorUnhandledMsg(msg, HomeType);
-
-    endswitch;
-
-  case HMTS_Pending:
-    switch msg.mtype
-
-    case DownResp:
-      assert (msg.src = HomeNode.owner) "DownResp from non-owner";
-      HomeNode.state := HS;
-      AddToSharersList(HomeNode.owner);
-      undefine HomeNode.owner;
-
-    case WBReq:
-      assert (msg.src = HomeNode.owner) "WBReq from non-owner";
-      HomeNode.state := HI;
-      undefine HomeNode.owner;
-      -- Don't send a WBResp because an InvReq is already in flight.
+    case WBResp:
+      if (msg.src = HomeNode.owner) then
+        HomeNode.state := HI;
+        undefine HomeNode.owner;
+      endif;
 
     case ReadReq:
       msg_processed := false;
@@ -310,18 +284,12 @@ Begin
   case HSTI_Pending:
     switch msg.mtype
 
-    case InvResp:
+    case WBResp:
       RemoveFromSharersList(msg.src);
       cnt := NumberOfSharers();
       if cnt = 0 then
         HomeNode.state := HI;
-      endif;
-
-    case WBReq:
-      RemoveFromSharersList(msg.src);
-      cnt := NumberOfSharers();
-      if cnt = 0 then
-        HomeNode.state := HI;
+        undefine HomeNode.owner;
       endif;
 
     case ReadReq:
@@ -350,7 +318,7 @@ Begin
   case PI:
 
     switch msg.mtype
-    --case RecallReq:
+    case RecallReq:
       --Send(WBResp, msg.src, p, VC2, msg.src, 0);
     else
       ErrorUnhandledMsg(msg, p);
@@ -359,11 +327,8 @@ Begin
   case PM:
 
     switch msg.mtype
-    case DownReq:
-      Send(DownResp, msg.src, p, VC2, msg.src, 0);
-      ps := PS;
-    case InvReq:
-      Send(InvResp, msg.src, p, VC2, msg.src, 0);
+    case RecallReq:
+      Send(WBResp, msg.src, p, VC2, msg.src, 0);
       ps := PI;
     else
       ErrorUnhandledMsg(msg, p);
@@ -372,8 +337,8 @@ Begin
   case PS:
 
     switch msg.mtype
-    case InvReq:
-      Send(InvResp, msg.src, p, VC2, msg.src, 0);
+    case RecallReq:
+      Send(WBResp, msg.src, p, VC2, msg.src, 0);
       ps := PI;
     else
       ErrorUnhandledMsg(msg, p);
@@ -384,8 +349,8 @@ Begin
     switch msg.mtype
     case ReadAck:
       ps := PS;
-   -- case RecallReq:
-    --  Send(WBResp, msg.src, p, VC2, msg.src, 0)
+    case RecallReq:
+      Send(WBResp, msg.src, p, VC2, msg.src, 0)
       --msg_processed := false; -- stall message in InBox
     else
       ErrorUnhandledMsg(msg, p);
@@ -396,23 +361,9 @@ Begin
     switch msg.mtype
     case WriteAck:
       ps := PM;
-    case InvReq:
-      Send(InvResp, msg.src, p, VC2, msg.src, 0);
-    --case RecallReq:
-    --  Send(WBResp, msg.src, p, VC2, msg.src, 0)
+    case RecallReq:
+      Send(WBResp, msg.src, p, VC2, msg.src, 0)
       --msg_processed := false; -- stall message in InBox
-    else
-      ErrorUnhandledMsg(msg, p);
-    endswitch;
-
-  case PTI_Pending:
-    switch msg.mtype
-    case WBResp:
-      ps := PI;
-    case InvReq:
-      ps := PI;
-    case DownReq:
-      ps := PI;
     else
       ErrorUnhandledMsg(msg, p);
     endswitch;
@@ -437,38 +388,38 @@ ruleset n:Proc Do
   alias p:Procs[n] Do
 
   rule "read request"
-    (p.state = PI)
+    (p.state = PI & (MultiSetCount(i:Net[n], true) < NetMax))
   ==>
     Send(ReadReq, HomeType, n, VC0, UNDEFINED, UNDEFINED);
     p.state := PTS_Pending;
   endrule;
 
   rule "write request"
-    (p.state = PI)
+    (p.state = PI & (MultiSetCount(i:Net[n], true) < NetMax))
   ==>
     Send(WriteReq, HomeType, n, VC0, UNDEFINED, UNDEFINED);
     p.state := PTM_Pending;
   endrule;
 
   rule "upgrade request"
-    (p.state = PS)
+    (p.state = PS & (MultiSetCount(i:Net[n], true) < NetMax))
   ==>
     Send(WriteReq, HomeType, n, VC0, UNDEFINED, UNDEFINED);
     p.state := PTM_Pending;
   endrule;
 
   rule "writeback"
-    (p.state = PM)
+    (p.state = PM & (MultiSetCount(i:Net[n], true) < NetMax))
   ==>
-    Send(WBReq, HomeType, n, VC1, UNDEFINED, UNDEFINED);
-    p.state := PTI_Pending;
+    Send(WBResp, HomeType, n, VC1, UNDEFINED, UNDEFINED);
+    p.state := PI;
   endrule;
 
   rule "evict"
-    (p.state = PS)
+    (p.state = PS & (MultiSetCount(i:Net[n], true) < NetMax))
   ==>
-    Send(WBReq, HomeType, n, VC1, UNDEFINED, UNDEFINED);
-    p.state := PTI_Pending;
+    Send(WBResp, HomeType, n, VC1, UNDEFINED, UNDEFINED);
+    p.state := PI;
   endrule;
 
   endalias;
