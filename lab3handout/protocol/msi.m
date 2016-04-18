@@ -237,8 +237,8 @@ Begin
 
     case ReadReq:
       HomeNode.state := HMTS_Pending;
-      Send(DownReq, HomeNode.owner, HomeType, VC0, HomeNode.owner, cnt);
-      msg_processed := false;
+      Send(DownReq, HomeNode.owner, HomeType, VC0, msg.src, cnt);
+      --AddToSharersList(msg.src);
       
     case WriteReq:
       HomeNode.state := HMTI_Pending;
@@ -285,14 +285,22 @@ Begin
     switch msg.mtype
 
     case DownResp:
-      assert (msg.src = HomeNode.owner) "DownResp from non-owner";
+      --assert (msg.src = HomeNode.owner) "DownResp from non-owner";
       HomeNode.state := HS;
       AddToSharersList(HomeNode.owner);
+      AddToSharersList(msg.aux);
+      --if (IsUndefined(msg.aux) != true) then
+      --  Send(ReadAck, msg.aux, HomeType, VC1, UNDEFINED, cnt);
+      --endif;
       undefine HomeNode.owner;
 
     case WBReq:
       assert (msg.src = HomeNode.owner) "WBReq from non-owner";
-      HomeNode.state := HI;
+      if cnt = 0 then
+        HomeNode.state := HI;
+      else
+        HomeNode.state := HS;
+      endif;
       undefine HomeNode.owner;
       -- Don't send a WBResp because an InvReq is already in flight.
 
@@ -360,7 +368,8 @@ Begin
 
     switch msg.mtype
     case DownReq:
-      Send(DownResp, msg.src, p, VC2, msg.src, 0);
+      Send(DownResp, msg.src, p, VC2, msg.aux, 0);
+      Send(ReadAck, msg.aux, p, VC2, msg.src, 0);
       ps := PS;
     case InvReq:
       Send(InvResp, msg.src, p, VC2, msg.src, 0);
@@ -413,6 +422,8 @@ Begin
       ps := PI;
     case DownReq:
       ps := PI;
+      --Send(DownResp, msg.src, p, VC2, msg.aux, 0);
+      Send(ReadReq, msg.src, msg.aux, VC0, UNDEFINED, UNDEFINED);
     else
       ErrorUnhandledMsg(msg, p);
     endswitch;
