@@ -11,14 +11,14 @@
 ----------------------------------------------------------------------
 const
   -- TODO: start with this number at 1, then increase to 2 and eventually 3
-  ProcCount: 2;          -- number processors
+  ProcCount: 3;          -- number processors
 
   VC0: 0;                -- low priority
   VC1: 1;
   VC2: 2;                -- high priority
   NumVCs: VC2 - VC0 + 1;
   QMax: 2;
-  NetMax: ProcCount+1;
+  NetMax: 2*ProcCount+1;
   
 
 ----------------------------------------------------------------------
