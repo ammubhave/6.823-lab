@@ -1,0 +1,26 @@
+# -*- mode:python -*-
+
+import os
+
+Import("env")
+
+common_sources = ["config.cpp", "galloc.cpp", "log.cpp", "pin_cmd.cpp"]
+harness_sources = ["zsim_harness.cpp", "debug_harness.cpp"] + common_sources
+
+lib_sources = ["zsim.cpp", "init.cpp", "debug_zsim.cpp", "hash.cpp", "text_stats.cpp", "hdf5_stats.cpp",
+               "decoder.cpp", "scheduler.cpp", "process_tree.cpp", "syscall_funcs.cpp",
+               "tracing_core.cpp", "tracing_driver.cpp", "main_memory.cpp", "cache.cpp"] + common_sources
+
+libEnv = env.Clone()
+libEnv["CPPFLAGS"] += libEnv["PINCPPFLAGS"]
+libEnv["LINKFLAGS"] += libEnv["PINLINKFLAGS"]
+libEnv["LIBPATH"] += libEnv["PINLIBPATH"]
+libEnv["LIBS"] += libEnv["PINLIBS"]
+libEnv.SharedLibrary("zsim.so", lib_sources)
+
+# Compile statically to make it easier to run across environaments
+env["LINKFLAGS"] += " --static "
+env["LIBS"] += ["pthread"]
+env.Program("zsim", harness_sources)
+
+env.Program("fftoggle", ["fftoggle.cpp"] + common_sources)

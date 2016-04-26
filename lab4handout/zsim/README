@@ -1,0 +1,127 @@
+zsim README file
+Author: Daniel Sanchez <sanchez@csail.mit.edu>
+==============================================
+
+Intro
+=====
+
+zsim is a fast x86-64 simulator. It was originally written to evaluate ZCache (Sanchez and Kozyrakis,
+MICRO-44, Dec 2010), hence the name, but it has since outgrown its purpose.
+
+zsim's main goals are to be fast, simple, and accurate, with a focus on simulating memory hierarchies
+and large, heterogeneous systems. It is parallel and leverages DBT extensively, resulting in speeds of
+hundreds of millions of instructions/second in a modern multicore host. Unlike conventional simulators,
+zsim is organized to scale extremely well (almost linearly) with simulated core count.
+
+We are careful about sacrificing some accuracy for speed and simplicity, and you should be aware of
+the needs of your experiments to avoid excessive inaccuracy. We have validated key metrics of interest
+to our experiments using real machines (e.g., MPKI, IPC), but you should not blindly trust these
+results. zsim can be configured with varying degrees of accuracy, which may suffice in some studies; in
+other cases, you will need to modify the code, and for some purposes, zsim is just not the right tool.
+In any case, we strongly recommend validating your baseline configuration and workloads against a real
+machine.
+
+
+Copyright & License
+===================
+
+zsim was originally written by Daniel Sanchez at Stanford University, and per Stanford University policy,
+the copyright of this original code remains with Stanford (specifically, the Board of Trustees of Leland
+Stanford Junior University).
+
+zsim was subsequently modified and enhanced while Daniel Sanchez was an intern at Google. Google
+graciously agreed to share these modifications under a GPLv2 license. Note that this code is still
+(c) 2011 Google Inc. Files containing code developed at Google have a different license header with the
+correct copyright attribution.
+
+[TODO: Before public release, figure out what MIT's policy is w.r.t. copyright]
+
+Until we publicly release zsim, we ask you to not use it outside MIT or Stanford. We have submitted a
+paper about the infrastructure, and will release the code in early 2013. Until then, you must keep this
+limited to MIT and Stanford students and machines only.
+
+Additionally, if you use this software in your research, we request that you reference the zcache paper
+("The ZCache: Decoupling ways and Associativity", Sanchez and Kozyrakis, MICRO-44, December 2010) as the
+source of the simulator in any publications that use this software, and that you send us a citation of
+your work. Developing this code took serious effort; please do not take it for granted.
+
+
+Setup
+=====
+
+External dependencies: gcc >=4.6, pin, scons, mercurial, libconfig, polarssl, libhdf5
+
+1. Clone a fresh copy of the git zsim repository (git clone <path to zsim repo>).
+2. Download Pin, http://www.pintool.org/. Tested with Pin 2.8+ on an x86-64 architecture.
+   Compiler flags are set up for Pin 2.9 on x86-64. To get flags for other versions,
+   examine the Pin makefile or derive from sample pintools. Set the PINPATH environment
+   variable to Pin's base directory.
+   NOTE: Linux 3.0+ systems require Pin 2.10+, just because Pin does a kernel version
+   check that 3.0 fails.
+   NOTE 2: Use Pin 2.12 with Sandy/Ivy Bridge systems, earlier Pin versions have strange
+   performance regressions on this machine (extremely low IPC).
+3. zsim requires some additional libraries. If they are not installed in your system, you
+   will need to download and build them:
+  3.1 libconfig, http://www.hyperrealm.com/libconfig/ . To install locally, untar, run
+      ./configure --prefix=<libconfig install path> && make install . Then define the
+      environment variable LIBCONFIGPATH=<libconfig install path> . 
+  3.2 polarssl (currently used just for their SHA-1 hash function), http://www.polarssl.org/
+      Install locally as in 3.1 and define the env var POLARSSLPATH=<polarssl install path>
+      NOTE: You may need to add -fPIC to the Makefile's C(PP/XX)FLAGS depending on the version.
+  3.3 libhdf5, http://www.hdfgroup.org (v1.8.4 path 1 or higher). The SConstruct file assumes
+      it is installed in the system.
+4. Compile zsim: scons -j16
+5. Launch a test run: ./build/opt/zsim test/simple.cfg
+
+For more compilation options, run scons --help. You can build debug, optimized and release
+variants of the simulator (--d, --o, --r options). Optimized (opt) is the default. You can build
+profile-guided optimized (PGO) versions of the code with --p. These improve simulation perfromance
+with OOO cores by about 30%.
+
+NOTE: zsim uses C++11 features available in gcc >=4.6 (such as range-based for loops, strictly
+typed enums, lambdas, and type inference). Older compilers will not work. This will get worse
+and worse with time, so we suggest you move on and install a modern compiler.
+
+Notes
+=====
+
+- zsim can simulate multiple processes, which introduces some complexities in memory management.
+  Each Pin process uses SysV IPC shared memory to communicate through a global heap. Be aware
+  that Pin processes have a global and a process-local heap, and all simulator objects should be
+  allocated in the global heap. A global heap allocator is implemented (galloc.c and g_heap folder)
+  using Doug Lea's malloc. The global heap allocator functions are as the usual ones, with the gm_
+  prefix (e.g. gm_malloc, gm_calloc, gm_free).  Objects can be allocated in the global heap
+  automatically by making them inherit from GlobAlloc, which redefines the new and delete operators.
+  STL classes use their own internal allocators, so they cannot be members of globally visible
+  objects. To ease this, the g_stl folder has template specializations of commonly used STL classes
+  that are changed to use our own STL-compliant allocator that allocates from the global heap. Use
+  these classes as drop-in replacements when you need a globally visible STL class, e.g. substitute
+  std::vector with g_vector, etc.
+
+- While most of zsim is implemented as a pintool (libzsim.so), a harness process (zsim) is used to
+  control the simulation: set up the shared memory segment, launch pin processes, check for
+  deadlock, and ensure termination of the whole process tree when it is killed. In prior revisions
+  of the simulator, you could launch the pintool directly, but now you should use the harness.
+
+- The system configuration may need some tweaks to support zsim. First, it needs to allow for large
+  shared memory segments. Second, for Pin to work, it must allow a process to attach to any other
+  from the user, not just to a child. Use sysctl to ensure that kernel.shmmax=1073741824 (or larger)
+  and kernel.yama.ptrace_scope=0. While zsim has been run in several Linux distributions, the
+  repository version is guaranteed to work in the cyclades cluster only. If you are installing it
+  in another machine, you are on your own.
+
+- The simulator outputs periodic, eventual and end-of-sim stats files. Stats can be output in both
+  HDF5 and plain text. Check the README.stats file and the associated scripts repository to see how
+  to use these stats.
+
+- A detailed use guide is out of the scope of this README, because the simulator options change
+  fairly often. In general, *the documentation is the source code*. If you are not willing to
+  occasionally read the source code to see how it works, zsim is not for you. To get familiar with
+  the way to configure the simulator, check the examples in the tests/ folder. Config files have
+  three sections, sys (configures the simulated system, e.g., core and cache parameters), sim
+  (configures simulation parameters, e.g., how frequent are periodic stats output, phase length,
+  etc.), and process{0, 1, 2, ...} entries (what processes to run). Check the commit log messages
+  or the source code for more info on options. The whole system is configured in the init.cpp
+  (sys and sim entries) and process_tree.cpp (processX entries) files, so there is no need to grok
+  the whole simulator source to find out all the configuration options.
+
