@@ -1,0 +1,6 @@
+1. For inclusive caches, the parent has complete information on which lines are owned by the children. Therefore, it can serve any requests by itself. However, for non-inclusive and exclusive caches, this is no longer the case. The parent directory may not contain information of which lines are currently in the caches of its children. This means if some child send a request for a line, the parent has to search its children if it does not find the requested line in its own directory. However, one advantage of this type is that if the line resides in the parent directory for an exclusive cache, then the parent can be sure that no child has it, which means that it can service the request directly treating it as being in an I state i.e. now the whole parent directory behaves as being in I state which provides for caching a lot more data than an inclusive cache.
+
+2.
+I tried using the LRU replacement policy along with an exclusive cache which gave me the current speedup.
+
+I also tried implementing an adaptive replacement cache policy. It combines the best between a LRU and LFU caching by adapting dynamically the sizes respective lists according to what the current access pattern is.

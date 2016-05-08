@@ -8,7 +8,7 @@
 
 class Cache : public Memory {
     public:
-        Cache(g_string name, uint32_t numLines, uint32_t numWays, uint64_t hitLatency, bool isL1Cache, Memory *parent);
+        Cache(g_string name, uint32_t numLines, uint32_t numWays, uint64_t hitLatency, bool isL1Cache, bool isL2Cache, bool isL3Cache, Memory *parent);
         void initStats(AggregateStat* parentStat);
 
         uint64_t load(Address lineAddr);
@@ -19,7 +19,7 @@ class Cache : public Memory {
         void addChild(Memory* child) { children.push_back(child); }
     private:
         // FIXME: Implement the following two functions
-        void updatePolicy(uint32_t line, uint32_t way, bool isMiss);
+        void updatePolicy(uint32_t line, uint32_t way, bool isMiss, uint32_t old_tag);
         uint32_t chooseEvictWay(uint32_t line);
 
     private:
@@ -29,6 +29,8 @@ class Cache : public Memory {
         uint64_t latency;
         uint32_t numWays;
         bool isL1Cache;
+        bool isL2Cache;
+        bool isL3Cache;
         Counter hits;
         Counter misses;
         Counter invalidations;
@@ -40,6 +42,10 @@ class Cache : public Memory {
 
         // FIXME: Add meta data for you replacement policy
         // (e.g. timestamp for LRU)
+        //g_vector<uint32_t> T;/*[numWays]*/
+        //uint32_t m;
+        //g_vector<uint32_t> B;/*[numWays]*/
+        g_vector<g_vector<uint32_t>> usageQ;
 };
 
 #endif // __CACHE_H__

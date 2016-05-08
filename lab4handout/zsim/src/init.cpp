@@ -88,7 +88,7 @@ static void InitSystem(Config& config) {
         assert(nBytes % (lineSize * nWays) == 0);
         uint32_t latency = config.get<uint32_t>("memory.llc.latency");
         uint32_t nLines = nBytes / (lineSize * nWays);
-        sharedCache = new Cache("llc", nLines, nWays, latency, false, sharedMem);
+        sharedCache = new Cache("llc", nLines, nWays, latency, false, false, true, sharedMem);
     }
 
     for (uint32_t j = 0; j < numCores; j++) {
@@ -104,7 +104,7 @@ static void InitSystem(Config& config) {
             assert(nBytes % (lineSize * nWays) == 0);
             uint32_t nLines = nBytes / (lineSize * nWays);
             uint32_t latency = config.get<uint32_t>("memory.l2.latency");
-            L2 = new Cache(name, nLines, nWays, latency, false, mem);
+            L2 = new Cache(name, nLines, nWays, latency, false, true, false, mem);
             caches.push_back(L2);
             sharedCache->addChild(L2);
             mem = L2;
@@ -120,7 +120,7 @@ static void InitSystem(Config& config) {
             assert(nBytes % (lineSize * nWays) == 0);
             uint32_t nLines = nBytes / (lineSize * nWays);
             uint32_t latency = config.get<uint32_t>("memory.l1i.latency");
-            Cache *c = new Cache(name, nLines, nWays, latency, true, L2);
+            Cache *c = new Cache(name, nLines, nWays, latency, true, false, false, L2);
             caches.push_back(c);
             L2->addChild(c);
             l1i = c;
@@ -136,7 +136,7 @@ static void InitSystem(Config& config) {
             assert(nBytes % (lineSize * nWays) == 0);
             uint32_t nLines = nBytes / (lineSize * nWays);
             uint32_t latency = config.get<uint32_t>("memory.l1d.latency");
-            Cache *c = new Cache(name, nLines, nWays, latency, true, L2);
+            Cache *c = new Cache(name, nLines, nWays, latency, true, false, false, L2);
             caches.push_back(c);
             L2->addChild(c);
             l1d = c;
