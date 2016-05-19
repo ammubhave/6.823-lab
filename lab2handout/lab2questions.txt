@@ -1,0 +1,7 @@
+2. I am sng the Alpha implementation of the tournament predictor with a global history and a local history predictor. I am using the same parameters as the alpha machine used and the storage budget is under the limts. The tournament predictor choses between two predictors and based on which predictor provided the best answer based on the history, it uses that history fo that specific branch in the future. This predic'tor gives us the best tradeoff between the storage size and accuract as compared to other predictors. I have detailed a comparison with other predictor models in the ResultsSummary file, the other predictor implementations are also the ource code.
+My code uses two data models, the shift register and the couter structure which enforces size requirements.
+
+3. Since I chose to use the same Alpha implementation, ye it can be implemnted in hardware. The datastrcutures used is a shift register and a table, and matching and choosing can be easily implemented using muxes. 
+
+4. An update might be delayed befre another prediction is requested. In such cases, our branch predictor will have to speculatively update itself (probably alwaYS speculate that we are correct). And then rolback our speculations if we find that our speculations were incorrect.
+For the tournament predictor for example, we always update saying the predicted branch was correct, but after that if we find our speculation was incorrect, we update sayhing we took an incorrect branch there twice and that will offset the one speculation which was wrong.
