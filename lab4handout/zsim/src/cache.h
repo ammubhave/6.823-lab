@@ -20,7 +20,7 @@ class Cache : public Memory {
     private:
         // FIXME: Implement the following two functions
         void updatePolicy(uint32_t line, uint32_t way, bool isMiss, uint32_t old_tag);
-        uint32_t chooseEvictWay(uint32_t line);
+        uint32_t chooseEvictWay(uint32_t line, uint32_t ctag);
 
     private:
         g_string name;
@@ -42,10 +42,14 @@ class Cache : public Memory {
 
         // FIXME: Add meta data for you replacement policy
         // (e.g. timestamp for LRU)
-        //g_vector<uint32_t> T;/*[numWays]*/
-        //uint32_t m;
-        //g_vector<uint32_t> B;/*[numWays]*/
-        g_vector<g_vector<uint32_t>> usageQ;
+
+        // ARC
+        g_vector<uint32_t> T;/*[numWays]*/
+        uint32_t m, n;
+        g_vector<uint32_t> B;/*[numWays]*/
+       
+        // LRU
+        //g_vector<g_vector<uint32_t>> usageQ;
 };
 
 #endif // __CACHE_H__

@@ -27,13 +27,22 @@ Cache::Cache(g_string _name,
             , tagArray(){
     tagArray.resize(_numLines);
     for (auto &tags : tagArray) { tags.resize(_numWays, 0); }
-    usageQ.resize(_numLines);
+
+    // LRU
+    /*usageQ.resize(_numLines);
     for (int j = 0; j < _numLines; j++) {
         usageQ[j].resize(_numWays);
         for (int i = 0; i < _numWays; i++) {
             usageQ[j][i] = i;
         }
-    }
+    }*/
+
+    // ARC
+    T.resize(_numWays);
+    B.resize(_numWays);
+    for (int i = 0; i < _numWays; i++)
+        T[i] = i;
+    m = n = _numWays / 2;
 }
 
 void Cache::initStats(AggregateStat* parentStat) {
@@ -82,7 +91,7 @@ uint64_t Cache::access(Address lineAddr, bool isWrite) {
     if (isMiss) { // miss
         misses.inc();
         if (!isL3Cache || isWrite) { // evict if not L3
-            way = isL1Cache ? random() % numWays : chooseEvictWay(line);
+            way = isL1Cache ? random() % numWays : chooseEvictWay(line, tag);
             old_tag = entry_tag(tags[way]);
             if (is_dirty(tags[way]) || (is_valid(tags[way]) && isL2Cache)) {
                 Address victimAddr = (tags[way] * tagArray.size()) + line;
@@ -141,36 +150,89 @@ void Cache::invalidate(Address lineAddr) {
 
 // FIXME: Implement your own replacement policy here
 
-uint32_t Cache::chooseEvictWay(uint32_t line) {
+uint32_t Cache::chooseEvictWay(uint32_t line, uint32_t ctag) {
     //return random() % numWays;
-    /*for (int i = 0; i < (int) B1.size(); ++i) {
-        if (B1[i] == ctag) {
-            if (boundary == numWays-1)
-                return usageQ[0]; // can't increase the size of T1 any further.
-            else
-                return usageQ[numWays-1];
-        }
-    }*/
-    /*for (int i = 0; i < (int) B2.size(); ++i) {
-        if (B2[i] == ctag) {
-            return usageQ[0];
-        }
-    }*/
-    //return usageQ[0];
-    return usageQ[line][numWays-1];
+
+    // ARC
+    int L = numWays;
+    for (int i = 0; i <= L-m-1; ++i) {
+        if (B[i] == ctag)
+            return T[L-1];
+    }
+    for (int i = L-m; i <= L-1; ++i) {
+        if (B[i] == ctag)
+            return T[0];
+    }
+    //if (m < n)
+    //    return T[L-1];
+    //else
+        return T[0];
+
+    // LRU
+    //return usageQ[line][numWays-1];
 }
 
 void Cache::updatePolicy(uint32_t line, uint32_t way, bool isMiss, uint32_t old_tag) {
     assert(way < numWays);
-    for (int i=numWays-1,j=numWays-1; i > 0; i--,j--) {
+    /*for (int i=numWays-1,j=numWays-1; i > 0; i--,j--) {
         if (usageQ[line][i] == way) {
             j--;
         }
         usageQ[line][i] = usageQ[line][j];
     }
-    usageQ[line][0] = way;
-    /*int L = numWays;
+    usageQ[line][0] = way;*/
+    int L = numWays;
+    uint32_t ctag = entry_ctag(tagArray[line][way]);
     if (isMiss) {
+        for (int i = 0; i <= L-m-1; ++i) {
+            if (B[i] == ctag) {
+                assert(way == T[L-1]);
+                for (int j = L-1; j >= m+1; j--)
+                    T[j] = T[j-1];
+                T[m] = way;
+                for (int j = i; j <= L-m-2; j++)
+                    B[j] = B[j+1];
+                B[L-m-1] = 0;
+                for (int j = L-m; j <= L-2; j++)
+                    B[j] = B[j+1];
+                B[L-1] = old_tag;
+                n = n + 1;
+                m = m + 1;
+                return;
+            }
+        }
+
+        for (int i = L-m; i <= L-1; ++i) {
+            if (B[i] == ctag) {
+                assert(way == T[0]);
+                for (int j = 0; j <= m-2; j++)
+                    T[j] = T[j+1];
+                T[m-1] = way;
+                for (int j = i; j >= L-m+1; j--)
+                    B[j] = B[j-1];
+                B[L-m] = 0;
+                for (int j = L-m-1; j >= 1; j--)
+                    B[j] = B[j+1];
+                B[0] = old_tag;
+                n = n - 1;
+                m = m - 1;
+                return;
+            }
+        }
+
+//        if (m < n) {
+
+        //} else {
+            assert (way == T[0]);
+            for (int j = 0; j <= m-2; j++)
+                T[j] = T[j+1];
+            T[m-1] = way;
+            for (int j = L-m-1; j >= 1; j--)
+                B[j] = B[j+1];
+            B[0] = old_tag;
+            return;
+        //}
+/*
         for (int i = 0; i < (int) B1.size(); ++i) {
             if (B1[i] == ctag) {
                 for (int j = i; j < (int)B1.size(); ++j)
@@ -199,28 +261,25 @@ void Cache::updatePolicy(uint32_t line, uint32_t way, bool isMiss, uint32_t old_
             if (B2[i] == ctag) {
 
             }
-        }
+        }*/
     } else {
         for (int i = 0; i <= m; ++i) {
             if (T[i] == way) {
-                for (int j = L-m; j <= L-2; j++) 
-                    B[j] = B[j-1];
-                B[L-1] = entry_ctag(line_t[T[L-1]]);
-                for (int j = L-1; j >= m+1; j++)
-                    T[j] = T[j-1];
-                T[m] = way;
+                for (; i <= m-2; i++)
+                    T[i] = T[i+1];
+                T[m-1] = way;
+                m--;
                 return;
-
             }
         }
-        for (int i = boundary; i < (int)usageQ.size(); ++i) {
-            if (usageQ[i] == way) {
-                for (int j = i; j > boundary; j--)
-                    usageQ[j] = usageQ[j-1];
-                usageQ[boundary] = way;
+        for (int i = m; i <= L-1; ++i) {
+            if (T[i] == way) {
+                for (int j = i; j >= m+1; j--)
+                    T[j] = T[j-1];
+                T[m] = way;
                 return;
             }
         }
         assert (false); // we shouldn't be here, ever
-    }*/
+    }
 }
